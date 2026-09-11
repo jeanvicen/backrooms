@@ -3,293 +3,301 @@ using UnityEngine;
 namespace Backrooms.Interactables
 {
     /// <summary>
-    /// Porta interativa que pode ser aberta, trancada, ou exigir chaves.
-    /// Usada em todo o jogo para progressão e bloqueio de áreas.
+    /// Porta interagível que pode ser aberta, trancada ou exigir chave
     /// </summary>
     public class Door : MonoBehaviour, IInteractable
     {
-        [Header("Configurações da Porta")]
+        [Header("Door Settings")]
         [SerializeField] private bool isOpen = false;
         [SerializeField] private bool isLocked = false;
-        [SerializeField] private bool requiresKey = false;
-        [SerializeField] private string requiredKeyName = "";
+        [SerializeField] private bool autoClose = false;
+        [SerializeField] private float autoCloseDelay = 3f;
+        
+        [Header("Animation")]
+        [SerializeField] private Transform doorPivot;
         [SerializeField] private float openAngle = 90f;
         [SerializeField] private float openSpeed = 2f;
-        [SerializeField] private float closeSpeed = 1f;
+        [SerializeField] private AnimationCurve openCurve = AnimationCurve.EaseInOut(0, 0, 1, 1);
         
-        [Header("Estado Atual")]
-        [SerializeField] private float currentAngle = 0f;
-        [SerializeField] private bool isMoving = false;
-        [SerializeField] private bool openingDirection = true; // true = abre para fora
+        [Header("Lock Requirements")]
+        [SerializeField] private bool requiresKey = false;
+        [SerializeField] private string requiredKeyName = "";
+        [SerializeField] private KeyCode unlockKey = KeyCode.E;
         
-        [Header("Referências")]
-        [SerializeField] private Transform doorPivot;
-        [SerializeField] private AudioSource audioSource;
-        [SerializeField] private Collider doorCollider;
-        
-        [Header("Áudio")]
+        [Header("Audio")]
         [SerializeField] private AudioClip openSound;
         [SerializeField] private AudioClip closeSound;
         [SerializeField] private AudioClip lockedSound;
-        [SerializeField] private AudioClip unlockSound;
         [SerializeField] private AudioClip creakSound;
+        [SerializeField] private AudioSource audioSource;
         
-        [Header("Interação")]
-        [SerializeField] private KeyCode interactionKey = KeyCode.E;
+        [Header("Interaction")]
+        [SerializeField] private string interactionPrompt = "Abrir porta";
         
-        // Propriedades
+        // State
+        private float currentAngle = 0f;
+        private float targetAngle = 0f;
+        private bool isAnimating = false;
+        private float animationTime = 0f;
+        private System.Collections.IEnumerator autoCloseCoroutine;
+
         public bool IsOpen => isOpen;
         public bool IsLocked => isLocked;
-        public bool CanInteract => !isMoving && (!isLocked || !requiresKey);
-        
-        // Eventos
-        public delegate void DoorStateChangedHandler(Door door, bool isOpen);
-        public event DoorStateChangedHandler OnDoorOpened;
-        public event DoorStateChangedHandler OnDoorClosed;
-        public event System.Action OnDoorLocked;
-        public event System.Action OnDoorUnlocked;
 
-        void Awake()
+        private void Start()
         {
             if (doorPivot == null)
+            {
                 doorPivot = transform;
+            }
             
             if (audioSource == null)
+            {
                 audioSource = GetComponent<AudioSource>();
+            }
             
-            if (doorCollider == null)
-                doorCollider = GetComponent<Collider>();
+            UpdateTargetAngle();
         }
 
-        void Update()
+        private void Update()
         {
-            if (isMoving)
+            if (isAnimating)
             {
-                HandleDoorMovement();
+                AnimateDoor();
             }
         }
 
-        public bool Interact()
+        /// <summary>
+        /// Interage com a porta (implementação IInteractable)
+        /// </summary>
+        public void Interact()
         {
             if (isLocked)
             {
-                PlayLockedSound();
-                return false;
-            }
-            
-            if (isMoving)
-            {
-                return false;
-            }
-            
-            ToggleDoor();
-            return true;
-        }
-
-        public void ToggleDoor()
-        {
-            if (isOpen)
-            {
-                CloseDoor();
+                TryUnlock();
             }
             else
             {
-                OpenDoor();
+                ToggleDoor();
             }
         }
 
-        public void OpenDoor()
+        /// <summary>
+        /// Verifica se pode interagir com a porta
+        /// </summary>
+        public bool CanInteract()
         {
-            if (isLocked || isMoving) return;
+            return !isAnimating;
+        }
+
+        /// <summary>
+        /// Retorna prompt de interação
+        /// </summary>
+        public string GetInteractionPrompt()
+        {
+            if (isLocked) return "Trancada";
+            return isOpen ? "Fechar" : "Abrir";
+        }
+
+        /// <summary>
+        /// Retorna nome do objeto
+        /// </summary>
+        public string GetObjectName()
+        {
+            return gameObject.name;
+        }
+
+        /// <summary>
+        /// Alterna estado da porta
+        /// </summary>
+        public void ToggleDoor()
+        {
+            if (isAnimating) return;
             
-            isMoving = true;
-            openingDirection = true;
+            isOpen = !isOpen;
+            UpdateTargetAngle();
+            StartAnimation();
+            PlayDoorSound(isOpen ? openSound : closeSound);
             
-            if (openSound != null && audioSource != null)
+            Debug.Log($"[Door] {(isOpen ? "Aberta" : "Fechada")}");
+        }
+
+        /// <summary>
+        /// Abre a porta
+        /// </summary>
+        public void Open()
+        {
+            if (!isOpen && !isAnimating)
             {
-                audioSource.PlayOneShot(openSound, 0.8f);
-            }
-            else if (creakSound != null && audioSource != null)
-            {
-                audioSource.PlayOneShot(creakSound, 0.6f);
+                isOpen = true;
+                UpdateTargetAngle();
+                StartAnimation();
+                PlayDoorSound(openSound);
             }
         }
 
-        public void CloseDoor()
+        /// <summary>
+        /// Fecha a porta
+        /// </summary>
+        public void Close()
         {
-            if (isMoving) return;
-            
-            isMoving = true;
-            openingDirection = false;
-            
-            if (closeSound != null && audioSource != null)
+            if (isOpen && !isAnimating)
             {
-                audioSource.PlayOneShot(closeSound, 0.8f);
+                isOpen = false;
+                UpdateTargetAngle();
+                StartAnimation();
+                PlayDoorSound(closeSound);
             }
-            else if (creakSound != null && audioSource != null)
+        }
+
+        /// <summary>
+        /// Tenta destrancar a porta
+        /// </summary>
+        private void TryUnlock()
+        {
+            if (!requiresKey)
+            {
+                isLocked = false;
+                ToggleDoor();
+                return;
+            }
+            
+            // Verificar se jogador tem a chave
+            Inventory.InventoryManager inventory = FindObjectOfType<Inventory.InventoryManager>();
+            
+            if (inventory != null && inventory.HasItem(requiredKeyName))
+            {
+                isLocked = false;
+                ToggleDoor();
+                Debug.Log($"[Door] Porta destrancada com {requiredKeyName}");
+            }
+            else
+            {
+                PlayDoorSound(lockedSound);
+                Debug.Log("[Door] Porta trancada - chave necessária");
+            }
+        }
+
+        /// <summary>
+        /// Tranca a porta
+        /// </summary>
+        public void Lock()
+        {
+            isLocked = true;
+            if (isOpen)
+            {
+                Close();
+            }
+            Debug.Log("[Door] Porta trancada");
+        }
+
+        /// <summary>
+        /// Destrava a porta
+        /// </summary>
+        public void Unlock()
+        {
+            isLocked = false;
+            Debug.Log("[Door] Porta destrancada");
+        }
+
+        /// <summary>
+        /// Atualiza ângulo alvo baseado no estado
+        /// </summary>
+        private void UpdateTargetAngle()
+        {
+            targetAngle = isOpen ? openAngle : 0f;
+            
+            if (autoClose && isOpen)
+            {
+                StartAutoClose();
+            }
+        }
+
+        /// <summary>
+        /// Inicia animação da porta
+        /// </summary>
+        private void StartAnimation()
+        {
+            isAnimating = true;
+            animationTime = 0f;
+        }
+
+        /// <summary>
+        /// Anima a porta
+        /// </summary>
+        private void AnimateDoor()
+        {
+            animationTime += Time.deltaTime * openSpeed;
+            
+            if (animationTime >= 1f)
+            {
+                animationTime = 1f;
+                isAnimating = false;
+            }
+            
+            float t = openCurve.Evaluate(animationTime);
+            currentAngle = Mathf.Lerp(currentAngle, targetAngle, t);
+            
+            doorPivot.localEulerAngles = new Vector3(0, currentAngle, 0);
+        }
+
+        /// <summary>
+        /// Inicia coroutine de fechamento automático
+        /// </summary>
+        private void StartAutoClose()
+        {
+            if (autoCloseCoroutine != null)
+            {
+                StopCoroutine(autoCloseCoroutine);
+            }
+            
+            autoCloseCoroutine = AutoCloseRoutine();
+            StartCoroutine(autoCloseCoroutine);
+        }
+
+        /// <summary>
+        /// Rotina de fechamento automático
+        /// </summary>
+        private System.Collections.IEnumerator AutoCloseRoutine()
+        {
+            yield return new WaitForSeconds(autoCloseDelay);
+            
+            if (isOpen && !isAnimating)
+            {
+                Close();
+            }
+        }
+
+        /// <summary>
+        /// Toca som da porta
+        /// </summary>
+        private void PlayDoorSound(AudioClip clip)
+        {
+            if (clip != null && audioSource != null)
+            {
+                audioSource.PlayOneShot(clip);
+            }
+        }
+
+        /// <summary>
+        /// Toca som de rangido (para portas assustadoras)
+        /// </summary>
+        public void PlayCreak()
+        {
+            if (creakSound != null && audioSource != null)
             {
                 audioSource.PlayOneShot(creakSound, 0.5f);
             }
         }
 
-        void HandleDoorMovement()
+        /// <summary>
+        /// Força estado da porta sem animação
+        /// </summary>
+        public void ForceState(bool shouldBeOpen)
         {
-            float targetAngle = isOpen ? openAngle : 0f;
-            float speed = isOpen ? closeSpeed : openSpeed;
-            
-            currentAngle = Mathf.MoveTowards(currentAngle, targetAngle, speed * Time.deltaTime);
-            
-            // Aplica rotação ao pivot da porta
-            if (openingDirection)
-            {
-                doorPivot.localRotation = Quaternion.Euler(0, currentAngle, 0);
-            }
-            else
-            {
-                doorPivot.localRotation = Quaternion.Euler(0, -currentAngle, 0);
-            }
-            
-            // Verifica se terminou o movimento
-            if (Mathf.Approximately(currentAngle, targetAngle))
-            {
-                isMoving = false;
-                isOpen = !isOpen;
-                
-                if (isOpen)
-                {
-                    OnDoorOpened?.Invoke(this, true);
-                    DisableCollision();
-                }
-                else
-                {
-                    OnDoorClosed?.Invoke(this, false);
-                    EnableCollision();
-                }
-            }
-        }
-
-        public void Lock()
-        {
-            isLocked = true;
-            OnDoorLocked?.Invoke();
-        }
-
-        public void Unlock()
-        {
-            isLocked = false;
-            OnDoorUnlocked?.Invoke();
-            
-            if (unlockSound != null && audioSource != null)
-            {
-                audioSource.PlayOneShot(unlockSound, 0.7f);
-            }
-        }
-
-        public bool TryUnlockWithKey(string keyName)
-        {
-            if (!requiresKey) return false;
-            
-            if (keyName == requiredKeyName)
-            {
-                Unlock();
-                return true;
-            }
-            
-            return false;
-        }
-
-        public void ForceOpen()
-        {
-            isLocked = false;
-            isOpen = true;
-            currentAngle = openAngle;
-            doorPivot.localRotation = Quaternion.Euler(0, currentAngle, 0);
-            DisableCollision();
-        }
-
-        public void ForceClose()
-        {
-            isOpen = false;
-            currentAngle = 0f;
-            doorPivot.localRotation = Quaternion.identity;
-            EnableCollision();
-        }
-
-        void DisableCollision()
-        {
-            if (doorCollider != null)
-            {
-                doorCollider.enabled = false;
-            }
-        }
-
-        void EnableCollision()
-        {
-            if (doorCollider != null)
-            {
-                doorCollider.enabled = true;
-            }
-        }
-
-        void PlayLockedSound()
-        {
-            if (lockedSound != null && audioSource != null)
-            {
-                audioSource.PlayOneShot(lockedSound, 0.5f);
-            }
-        }
-
-        public string GetPromptText()
-        {
-            if (isLocked)
-            {
-                return requiresKey ? $"Trancado (precisa: {requiredKeyName})" : "Trancado";
-            }
-            
-            return isOpen ? "Fechar Porta" : "Abrir Porta";
-        }
-
-        // Método para ser chamado por eventos (ex: puzzle completado)
-        public void OnEventTrigger(string eventType)
-        {
-            switch (eventType)
-            {
-                case "open":
-                    OpenDoor();
-                    break;
-                case "close":
-                    CloseDoor();
-                    break;
-                case "lock":
-                    Lock();
-                    break;
-                case "unlock":
-                    Unlock();
-                    break;
-                case "toggle":
-                    ToggleDoor();
-                    break;
-            }
-        }
-
-        // Debug
-        void OnDrawGizmosSelected()
-        {
-            // Desenha arco mostrando direção de abertura
-            Vector3 pivotPos = doorPivot != null ? doorPivot.position : transform.position;
-            
-            Gizmos.color = isOpen ? Color.green : Color.red;
-            Gizmos.DrawLine(pivotPos, pivotPos + transform.forward * 2f);
-            
-            // Texto de estado
-#if UNITY_EDITOR
-            GUIStyle style = new GUIStyle();
-            style.fontSize = 14;
-            style.normal.textColor = Color.white;
-            
-            string status = $"{(isOpen ? "Aberta" : "Fechada")} | {(isLocked ? "Trancada" : "Destrancada")}";
-            UnityEditor.Handles.Label(pivotPos + Vector3.up * 2f, status, style);
-#endif
+            isOpen = shouldBeOpen;
+            currentAngle = shouldBeOpen ? openAngle : 0f;
+            doorPivot.localEulerAngles = new Vector3(0, currentAngle, 0);
         }
     }
 }
